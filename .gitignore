@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+*.pkl
+dist/
+build/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime / cron logs
+logs/
+*.log
+
+# Generated pipeline artifacts (keep data/smoke/ for fixtures)
+data/raw/
+data/panels/
+data/models/
+data/predictions/
+data/snapshots/
+data/cache/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
