@@ -576,6 +576,22 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument(
+        "--data-uri",
+        default=None,
+        help="Use a GCS workspace such as gs://bucket[/prefix] instead of local data",
+    )
+    parser.add_argument(
+        "--gcs-credentials",
+        type=Path,
+        default=None,
+        help="Service-account JSON path; defaults to GOOGLE_APPLICATION_CREDENTIALS",
+    )
+    parser.add_argument(
+        "--migrate-local-data",
+        action="store_true",
+        help="Upload --data-dir to --data-uri before running the workflow",
+    )
     parser.add_argument("--as-of", type=date.fromisoformat, default=None)
     parser.add_argument(
         "--season-phase",
@@ -623,21 +639,38 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
-    summary = run_workflow(
-        as_of=args.as_of,
-        data_dir=args.data_dir,
-        skip_fetch=args.skip_fetch,
-        skip_train=args.skip_train,
-        skip_predict=args.skip_predict,
-        skip_backfill=args.skip_backfill,
-        only=args.only,
-        targets=args.target,
-        no_splits=args.no_splits,
-        season_phase_override=args.season_phase,
-        force_stats=args.force_stats,
-        force_train=args.force_train,
-        include_today_boxscores=args.include_today_boxscores,
-    )
+    def _run(data_dir: Path) -> dict:
+        return run_workflow(
+            as_of=args.as_of,
+            data_dir=data_dir,
+            skip_fetch=args.skip_fetch,
+            skip_train=args.skip_train,
+            skip_predict=args.skip_predict,
+            skip_backfill=args.skip_backfill,
+            only=args.only,
+            targets=args.target,
+            no_splits=args.no_splits,
+            season_phase_override=args.season_phase,
+            force_stats=args.force_stats,
+            force_train=args.force_train,
+            include_today_boxscores=args.include_today_boxscores,
+        )
+
+    if args.data_uri:
+        from gcs_storage import gcs_workspace, migrate_local_data
+
+        if args.migrate_local_data:
+            migrated = migrate_local_data(
+                args.data_uri,
+                local_data_dir=args.data_dir,
+                credentials_path=args.gcs_credentials,
+            )
+            print(f"migrated {migrated} local data files to {args.data_uri}")
+
+        with gcs_workspace(args.data_uri, credentials_path=args.gcs_credentials) as workspace:
+            summary = _run(workspace)
+    else:
+        summary = _run(args.data_dir)
     print("\n==> done")
     phase = (summary.get("phase") or {}).get("phase", "?")
     games = summary.get("games_today")

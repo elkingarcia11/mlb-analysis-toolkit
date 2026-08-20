@@ -32,14 +32,11 @@ logs/
 *.log
 
 # Generated pipeline artifacts (keep data/smoke/ for fixtures)
-data/raw/
-data/panels/
-data/models/
-data/predictions/
-data/snapshots/
-data/cache/
 
 # Local env / secrets
 .env
 .env.*
 !.env.example
+gcs-sa.json
+
+data/
