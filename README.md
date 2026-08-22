@@ -8,7 +8,7 @@ The main entry point is `workflow.py`, which runs the full daily pipeline.
 
 - Python 3.10+
 - Network access for MLB Stats API, ESPN scoreboard, and park-factor data
-- Google Cloud Storage access when using the `--data-uri` workflow mode
+- Google Cloud Storage access when using the default GCS-backed workflow mode
 - No API key is required for the supported data sources
 
 ## Quick start
@@ -35,13 +35,30 @@ includes those dependencies plus `pytest`.
 python workflow.py
 ```
 
-This performs the daily MLB workflow, including season detection, data fetches, alignment, training, and prediction steps.
+GCS is the default source of truth. The command automatically:
+
+1. Downloads **all existing data** from `gs://mlb-analysis-toolkit` into a temporary workspace
+2. Merges any newly-fetched local `data/` files on top
+3. Fetches new stats/schedule/odds for today
+4. Backfills prior days (schedule, panels, boxscore labels) — covering old raw days already in GCS
+5. Retrains every model using the full merged history
+6. Predicts today's matchups
+7. Uploads everything (new raw days, panels, models, predictions) back to `gs://mlb-analysis-toolkit`
+
+Credentials are auto-detected from `gcs-sa.json` in the project root, or
+`GOOGLE_APPLICATION_CREDENTIALS`. No extra flags are needed.
+
+```bash
+python workflow.py --local-only          # old behavior: local data/ only
+python workflow.py --gcs-credentials other-sa.json
+python workflow.py --data-uri gs://my-bucket/my-prefix
+python workflow.py --target player_hits   # restrict to one target
+```
 
 ### Useful options
 
 ```bash
 python workflow.py --as-of 2026-08-18
-python workflow.py --data-uri gs://mlb-analysis-toolkit --gcs-credentials gcs-sa.json
 python workflow.py --only predict
 python workflow.py --only train
 python workflow.py --only backfill
@@ -64,12 +81,18 @@ before games finish; `--include-today-boxscores` is intended for later replays.
 The workflow runs results settlement, prior-day backfill, today's stats,
 schedule, ESPN DraftKings odds, panel alignment, model training, and
 prediction as applicable to the detected season phase. Existing snapshots and
-up-to-date models are reused unless their force flags are supplied.
+up-to-date models are reused unless their force flags are supplied. In GCS
+mode (the default), retraining is forced so the merged history is always used.
 
 ### GCS-backed data
 
-Use the GCS mode to keep raw snapshots, caches, panels, models, and predictions
-in a bucket instead of the local `data/` directory:
+By default `python workflow.py` reads and writes `gs://mlb-analysis-toolkit`.
+The bucket may be changed with `--data-uri gs://bucket[/prefix]`. The workflow
+downloads the whole prefix into a temporary workspace, merges local `data/`
+files on top, runs the normal pipeline, and uploads the entire workspace back
+to the same prefix, so nothing is ever lost.
+
+The first run may also explicitly upload the local `data/` directory:
 
 ```bash
 python workflow.py \
@@ -78,17 +101,13 @@ python workflow.py \
 	--gcs-credentials gcs-sa.json
 ```
 
-Run `--migrate-local-data` once, before the first GCS-backed workflow, to copy
-the existing local `data/` directory into the bucket. Omit it on subsequent
-runs so the bucket remains the source of truth. Use `--data-dir` if the local
-source directory is not the default `data/`.
-
-The URI may include a prefix, such as `gs://mlb-analysis-toolkit/data`. The
-workflow downloads that prefix into a temporary workspace, runs the normal
-pipeline, and uploads the resulting files back to the same prefix. Existing
-local `--data-dir` behavior is unchanged. Instead of `--gcs-credentials`, set
+On subsequent runs `--migrate-local-data` is unnecessary (the local merge
+happens automatically). Instead of `--gcs-credentials`, set
 `GOOGLE_APPLICATION_CREDENTIALS` to the service-account JSON path. Never commit
 that credential file; `gcs-sa.json` is ignored by Git.
+
+Use `--local-only` to keep everything in the local `data/` directory with no
+GCS interactions.
 
 ## Train and predict directly
 
@@ -110,11 +129,11 @@ Available targets are `team_win`, `team_total_runs`, `team_run_diff`,
 
 - The workflow is designed for a morning cron run and can skip certain steps based on the detected season phase.
 - Raw daily snapshots are stored under `data/raw/YYYY-MM-DD/` locally, or the
-	equivalent prefix in GCS.
+  equivalent prefix in GCS.
 - Aligned labeled panels are stored under `data/panels/YYYY-MM-DD/` locally, or
-	the equivalent prefix in GCS.
+  the equivalent prefix in GCS.
 - Saved models are written to `data/models/`; predictions are written to
-	`data/predictions/YYYY-MM-DD/`, locally or in the configured GCS prefix.
+  `data/predictions/YYYY-MM-DD/`, locally or in the configured GCS prefix.
 - Runtime logs can be redirected to `logs/`; that directory is ignored by git.
 - If you are running tests:
 

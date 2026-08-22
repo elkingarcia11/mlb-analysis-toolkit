@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import traceback
 from datetime import date, timedelta
@@ -30,6 +31,42 @@ from typing import Any, Callable, Dict, List, Optional
 
 from paths import iter_raw_day_dirs, panels_day_dir, raw_day_dir
 from season_phase import PHASES, detect_phase, workflow_step_policy
+
+DEFAULT_GCS_URI = "gs://mlb-analysis-toolkit"
+DEFAULT_CRED_FILE = Path("gcs-sa.json")
+
+
+def resolve_gcs_defaults(
+    *,
+    data_uri: Optional[str],
+    credentials_path: Optional[Path],
+    local_only: bool,
+) -> tuple[Optional[str], Optional[Path]]:
+    """
+    Default the daily pipeline to GCS-backed mode.
+
+    Plain `python workflow.py` now uses GCS as the source of truth: it
+    downloads ALL existing bucket data, merges any newly-fetched local files,
+    backfills old days, retrains models, predicts today's matchup, and uploads
+    everything back to the bucket. --local-only preserves the old behavior.
+    """
+    if local_only:
+        return None, None
+    uri = data_uri or os.environ.get("MLB_DATA_URI") or DEFAULT_GCS_URI
+    if credentials_path:
+        cred = credentials_path
+    elif DEFAULT_CRED_FILE.exists():
+        cred = DEFAULT_CRED_FILE
+    elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        cred = Path(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
+    else:
+        raise FileNotFoundError(
+            f"GCS mode requires credentials: {DEFAULT_CRED_FILE} not found "
+            "and GOOGLE_APPLICATION_CREDENTIALS unset. Place gcs-sa.json in "
+            "the project root, set GOOGLE_APPLICATION_CREDENTIALS, or run "
+            "with --local-only."
+        )
+    return uri, cred
 
 
 StepFn = Callable[[], Optional[Dict[str, Any]]]
@@ -339,12 +376,14 @@ def run_workflow(
     # 2) Backfill prior days.
     if "backfill" in steps_wanted and not skip_backfill and not skip_fetch:
         if not allowed("backfill"):
-            add(_skip_step("backfill_prior_days", f"phase={phase_info['phase']}"))
+            add(_skip_step("backfill_prior_days",
+                f"phase={phase_info['phase']}"))
         else:
             add(
                 _safe_call(
                     "backfill_prior_days",
-                    lambda: backfill_prior_days(data_dir=data_dir, as_of=as_of),
+                    lambda: backfill_prior_days(
+                        data_dir=data_dir, as_of=as_of),
                 )
             )
 
@@ -363,7 +402,8 @@ def run_workflow(
             import data_fetcher
 
             def _stats() -> dict:
-                timeframes = ("ytd",) if phase_info.get("prefer_ytd_only") else None
+                timeframes = ("ytd",) if phase_info.get(
+                    "prefer_ytd_only") else None
                 matchup_split_codes = (
                     "vl",
                     "vr",
@@ -380,7 +420,8 @@ def run_workflow(
                 if timeframes is not None:
                     kwargs["timeframes"] = timeframes
                 data = data_fetcher.fetch_requested(**kwargs)
-                exported = data_fetcher.export_csvs(data, raw_day_dir(as_of, data_dir))
+                exported = data_fetcher.export_csvs(
+                    data, raw_day_dir(as_of, data_dir))
                 return {
                     label: {"path": str(path), "status": status, "rows": n}
                     for label, (path, status, n) in exported.items()
@@ -426,7 +467,8 @@ def run_workflow(
             if games_today == 0:
                 print("  off day / empty slate — skipping odds, align, predict")
     elif allowed("schedule") and (data_dir / "raw" / as_of.isoformat() / "games.csv").exists():
-        games_today = _count_games_csv(raw_day_dir(as_of, data_dir) / "games.csv")
+        games_today = _count_games_csv(
+            raw_day_dir(as_of, data_dir) / "games.csv")
         results["games_today"] = games_today
         policy = workflow_step_policy(
             phase_info["phase"],
@@ -447,7 +489,8 @@ def run_workflow(
             import odds_fetcher
             from paths import resolve_day_csvs
 
-            teams_csv, players_csv = resolve_day_csvs(data_dir=data_dir, as_of=as_of)
+            teams_csv, players_csv = resolve_day_csvs(
+                data_dir=data_dir, as_of=as_of)
             add(
                 _safe_call(
                     "odds_fetcher",
@@ -526,7 +569,8 @@ def run_workflow(
                             )
                         except Exception as err:
                             out.append(
-                                {"target": target, "ok": False, "error": str(err)}
+                                {"target": target, "ok": False,
+                                    "error": str(err)}
                             )
                     out_meta = {"targets": out, "freshness": freshness}
                     return out_meta
@@ -560,7 +604,8 @@ def run_workflow(
                             )
                         )
                     except Exception as err:
-                        out.append({"target": target, "ok": False, "error": str(err)})
+                        out.append(
+                            {"target": target, "ok": False, "error": str(err)})
                 return {"targets": out}
 
             add(_safe_call("predict", _predict))
@@ -585,7 +630,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--gcs-credentials",
         type=Path,
         default=None,
-        help="Service-account JSON path; defaults to GOOGLE_APPLICATION_CREDENTIALS",
+        help="Service-account JSON path; defaults to gcs-sa.json or GOOGLE_APPLICATION_CREDENTIALS",
+    )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Run against the local data/ directory only (no GCS merge/upload)",
     )
     parser.add_argument(
         "--migrate-local-data",
@@ -639,7 +689,13 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
-    def _run(data_dir: Path) -> dict:
+    data_uri, credentials_path = resolve_gcs_defaults(
+        data_uri=args.data_uri,
+        credentials_path=args.gcs_credentials,
+        local_only=args.local_only,
+    )
+
+    def _run(data_dir: Path, force_train: bool) -> dict:
         return run_workflow(
             as_of=args.as_of,
             data_dir=data_dir,
@@ -652,25 +708,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             no_splits=args.no_splits,
             season_phase_override=args.season_phase,
             force_stats=args.force_stats,
-            force_train=args.force_train,
+            force_train=force_train,
             include_today_boxscores=args.include_today_boxscores,
         )
 
-    if args.data_uri:
+    if data_uri:
         from gcs_storage import gcs_workspace, migrate_local_data
 
         if args.migrate_local_data:
             migrated = migrate_local_data(
-                args.data_uri,
+                data_uri,
                 local_data_dir=args.data_dir,
-                credentials_path=args.gcs_credentials,
+                credentials_path=credentials_path,
             )
-            print(f"migrated {migrated} local data files to {args.data_uri}")
+            print(f"migrated {migrated} local data files to {data_uri}")
 
-        with gcs_workspace(args.data_uri, credentials_path=args.gcs_credentials) as workspace:
-            summary = _run(workspace)
+        # GCS is the source of truth: download ALL existing bucket data, merge
+        # any newly-fetched local files on top, run the daily pipeline, then
+        # upload the entire workspace (backfills/models/predictions) back.
+        print(
+            f"using GCS workspace {data_uri} (download all + merge local + upload)")
+        with gcs_workspace(
+            data_uri,
+            credentials_path=credentials_path,
+            local_dir=args.data_dir,
+        ) as workspace:
+            summary = _run(workspace, force_train=True)
     else:
-        summary = _run(args.data_dir)
+        print("using local-only data directory (--local-only)")
+        summary = _run(args.data_dir, force_train=args.force_train)
     print("\n==> done")
     phase = (summary.get("phase") or {}).get("phase", "?")
     games = summary.get("games_today")
