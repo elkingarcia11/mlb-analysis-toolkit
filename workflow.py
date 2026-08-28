@@ -725,7 +725,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # GCS is the source of truth: download ALL existing bucket data, merge
         # any newly-fetched local files on top, run the daily pipeline, then
-        # upload the entire workspace (backfills/models/predictions) back.
+        # upload only files that changed (merges/backfills/models/predictions).
         print(
             f"using GCS workspace {data_uri} (download all + merge local + upload)")
         with gcs_workspace(
