@@ -1,4 +1,4 @@
-# MLB Analysis Toolkit
+# Slate MLB Predictions Toolkit
 
 This project fetches MLB data, builds daily game panels, and trains/predicts team and player outcomes.
 
